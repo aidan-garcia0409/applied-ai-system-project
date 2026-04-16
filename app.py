@@ -1,40 +1,41 @@
+import os
 import streamlit as st
-from models import Pet, Owner, Task, Scheduler
+from models import Pet, Owner, Task, get_default_tasks
+from rag import generate_schedule_with_llm, answer_question
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
+# ---------------------------------------------------------------------------
+# KB readiness check — warn once if the index hasn't been built yet
+# ---------------------------------------------------------------------------
+CHROMA_PATH = os.path.join(os.path.dirname(__file__), ".chroma")
+_kb_ready = os.path.isdir(CHROMA_PATH)
+
 st.title("🐾 PawPal+")
 
-with st.expander("Scenario", expanded=True):
-    st.markdown(
-        """
-**PawPal+** is a pet care planning assistant. It helps a pet owner plan care tasks
-for their pet(s) based on constraints like time, priority, and preferences.
-
-You will design and implement the scheduling logic and connect it to this Streamlit UI.
-"""
+if not _kb_ready:
+    st.warning(
+        "Knowledge base not found. Run `python scripts/build_kb.py` once to enable "
+        "AI-grounded schedule explanations and the Ask PawPal+ chat."
     )
 
-with st.expander("What you need to build", expanded=True):
-    st.markdown(
-        """
-At minimum, your system should:
-- Represent pet care tasks (what needs to happen, how long it takes, priority)
-- Represent the pet and the owner (basic info and preferences)
-- Build a plan/schedule for a day that chooses and orders tasks based on constraints
-- Explain the plan (why each task was chosen and when it happens)
-"""
-    )
+# ---------------------------------------------------------------------------
+# Pet & owner inputs
+# ---------------------------------------------------------------------------
+st.subheader("Your Pet")
+col_owner, col_pet = st.columns(2)
+with col_owner:
+    owner_name = st.text_input("Owner name", value="Jordan")
+with col_pet:
+    pet_name = st.text_input("Pet name", value="Mochi")
 
-st.divider()
-
-st.subheader("Quick Demo Inputs (UI only)")
-owner_name = st.text_input("Owner name", value="Jordan")
-pet_name = st.text_input("Pet name", value="Mochi")
 species = st.selectbox("Species", ["dog", "cat"])
 
+# ---------------------------------------------------------------------------
+# Task inputs
+# ---------------------------------------------------------------------------
 st.markdown("### Tasks")
-st.caption("Add a few tasks. In your final version, these should feed into your scheduler.")
+st.caption("Add custom tasks, or use the defaults for your pet's species.")
 
 if "tasks" not in st.session_state:
     st.session_state.tasks = []
@@ -47,25 +48,45 @@ with col2:
 with col3:
     priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
 
-if st.button("Add task"):
-    st.session_state.tasks.append(
-        {"title": task_title, "duration_minutes": int(duration), "priority": priority}
-    )
+btn_col1, btn_col2 = st.columns(2)
+with btn_col1:
+    if st.button("Add task"):
+        st.session_state.tasks.append(
+            {"title": task_title, "duration_minutes": int(duration), "priority": priority, "frequency": 1}
+        )
+with btn_col2:
+    if st.button("Load defaults for species"):
+        pet_temp = Pet(name=pet_name, species=species, age=0)
+        defaults = get_default_tasks(pet_temp)
+        st.session_state.tasks = [
+            {
+                "title": t.title,
+                "duration_minutes": t.duration_minutes,
+                "priority": t.priority,
+                "frequency": t.frequency,
+            }
+            for t in defaults
+        ]
 
 if st.session_state.tasks:
     st.write("Current tasks:")
     st.table(st.session_state.tasks)
+    if st.button("Clear tasks"):
+        st.session_state.tasks = []
+        st.rerun()
 else:
-    st.info("No tasks yet. Add one above.")
+    st.info("No tasks yet. Add one above or load the species defaults.")
 
 st.divider()
 
+# ---------------------------------------------------------------------------
+# Schedule generation
+# ---------------------------------------------------------------------------
+AVAILABLE_HOURS = 8
+
 st.subheader("Build Schedule")
-st.caption("This button should call your scheduling logic once you implement it.")
 
-AVAILABLE_HOURS = 8  # default time budget; no UI field in v1 (UX-01 deferred to v2)
-
-if st.button("Generate schedule"):
+if st.button("Generate schedule", type="primary"):
     if not st.session_state.tasks:
         st.warning("Add at least one task before generating a schedule.")
     else:
@@ -76,12 +97,16 @@ if st.button("Generate schedule"):
                 title=t["title"],
                 duration_minutes=t["duration_minutes"],
                 priority=t["priority"],
-                frequency=1,   # UI does not collect frequency; KeyError if read from dict
+                frequency=t.get("frequency", 1),
                 pet=pet,
             )
             for t in st.session_state.tasks
         ]
-        st.session_state.schedule = Scheduler(owner=owner, tasks=tasks).generate_schedule()
+        with st.spinner("Building AI-grounded schedule..."):
+            schedule = generate_schedule_with_llm(tasks, pet, owner)
+
+        st.session_state.schedule = schedule
+        st.session_state.pet = pet
 
 if "schedule" in st.session_state:
     schedule = st.session_state.schedule
@@ -91,10 +116,10 @@ if "schedule" in st.session_state:
         st.subheader("Today's Schedule")
         st.table([
             {
-                "Start": b.start_time.strftime("%H:%M"),
+                "Start": b.start_time.strftime("%I:%M %p").lstrip("0"),
                 "Task": b.task.title,
                 "Pet": b.task.pet.name,
-                "Reason": b.reason,
+                "Why": b.reason,
             }
             for b in schedule.blocks
         ])
@@ -105,3 +130,40 @@ if "schedule" in st.session_state:
             {"Task": t.title, "Duration (min)": t.duration_minutes, "Priority": t.priority}
             for t in schedule.skipped
         ])
+
+# ---------------------------------------------------------------------------
+# Ask PawPal+ — sidebar chat
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    st.header("Ask PawPal+")
+    st.caption("Ask anything about your pet's care. Answers are grounded in veterinary guidelines.")
+
+    if not _kb_ready:
+        st.info("Build the knowledge base first (`python scripts/build_kb.py`) to enable chat.")
+    else:
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
+
+        # Display conversation history
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+
+        # Input box
+        user_q = st.chat_input("e.g. How often should I brush my cat?")
+        if user_q:
+            # Determine pet context — fall back to a generic pet if no schedule run yet
+            pet_ctx = st.session_state.get(
+                "pet", Pet(name="your pet", species=species, age=0)
+            )
+
+            st.session_state.chat_history.append({"role": "user", "content": user_q})
+            with st.chat_message("user"):
+                st.write(user_q)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Looking up guidelines..."):
+                    answer = answer_question(user_q, pet_ctx)
+                st.write(answer)
+
+            st.session_state.chat_history.append({"role": "assistant", "content": answer})

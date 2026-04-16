@@ -98,31 +98,39 @@ class Scheduler:
     tasks: list  # list[Task]
 
     def generate_schedule(self) -> "Schedule":
-        # Step 1: Expand frequency > 1 tasks into N copies (local list — never mutate self.tasks)
-        expanded = []
-        for task in self.tasks:
-            for _ in range(task.frequency):
-                expanded.append(task)
+        # Split available time into two halves.
+        # First occurrences of all tasks fill the morning half.
+        # Repeat occurrences (frequency > 1) are pushed to the afternoon half,
+        # so e.g. feeding x2 lands at 8am and ~noon rather than 8:30 and 8:40.
+        total_minutes = self.owner.available_hours * 60
+        half_minutes = total_minutes // 2
+        day_start = datetime.datetime.combine(datetime.date.today(), datetime.time(8, 0))
 
-        # Step 2: Sort by priority — high(0) before medium(1) before low(2)
-        sorted_tasks = sorted(expanded, key=lambda t: PRIORITY_ORDER[t.priority])
-
-        # Step 3: Greedy fit — track remaining minutes and running wall-clock
-        remaining = self.owner.available_hours * 60   # convert hours → minutes
-        current = datetime.datetime.combine(
-            datetime.date.today(), datetime.time(8, 0)
+        first_occ = sorted(self.tasks, key=lambda t: PRIORITY_ORDER[t.priority])
+        repeat_occ = sorted(
+            [t for t in self.tasks if t.frequency > 1],
+            key=lambda t: PRIORITY_ORDER[t.priority],
         )
+
         schedule = Schedule()
 
-        for task in sorted_tasks:
-            if task.duration_minutes <= remaining:
-                start = current.time()
-                current += datetime.timedelta(minutes=task.duration_minutes)
-                end = current.time()
-                reason = f"Scheduled: priority={task.priority}"
-                schedule.blocks.append(TimeBlock(task, start, end, reason))
-                remaining -= task.duration_minutes
-            else:
-                schedule.skipped.append(task)
+        def _fill_slot(tasks, slot_start, slot_budget):
+            current = slot_start
+            remaining = slot_budget
+            for task in tasks:
+                if task.duration_minutes <= remaining:
+                    start = current.time()
+                    current += datetime.timedelta(minutes=task.duration_minutes)
+                    schedule.blocks.append(
+                        TimeBlock(task, start, current.time(), f"Scheduled: priority={task.priority}")
+                    )
+                    remaining -= task.duration_minutes
+                else:
+                    if task not in schedule.skipped:
+                        schedule.skipped.append(task)
+
+        _fill_slot(first_occ, day_start, half_minutes)
+        afternoon_start = day_start + datetime.timedelta(minutes=half_minutes)
+        _fill_slot(repeat_occ, afternoon_start, half_minutes)
 
         return schedule

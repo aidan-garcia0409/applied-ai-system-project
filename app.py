@@ -23,13 +23,13 @@ if not _kb_ready:
 # Pet & owner inputs
 # ---------------------------------------------------------------------------
 st.subheader("Your Pet")
-col_owner, col_pet = st.columns(2)
-with col_owner:
-    owner_name = st.text_input("Owner name", value="Jordan")
+col_pet, col_species, col_hours = st.columns(3)
 with col_pet:
     pet_name = st.text_input("Pet name", value="Mochi")
-
-species = st.selectbox("Species", ["dog", "cat"])
+with col_species:
+    species = st.selectbox("Species", ["dog", "cat"])
+with col_hours:
+    available_hours = st.number_input("Hours available today", min_value=2, max_value=16, value=8)
 
 # ---------------------------------------------------------------------------
 # Task inputs
@@ -82,8 +82,6 @@ st.divider()
 # ---------------------------------------------------------------------------
 # Schedule generation
 # ---------------------------------------------------------------------------
-AVAILABLE_HOURS = 8
-
 st.subheader("Build Schedule")
 
 if st.button("Generate schedule", type="primary"):
@@ -91,7 +89,7 @@ if st.button("Generate schedule", type="primary"):
         st.warning("Add at least one task before generating a schedule.")
     else:
         pet = Pet(name=pet_name, species=species, age=0)
-        owner = Owner(name=owner_name, available_hours=AVAILABLE_HOURS)
+        owner = Owner(name="", available_hours=available_hours)
         tasks = [
             Task(
                 title=t["title"],

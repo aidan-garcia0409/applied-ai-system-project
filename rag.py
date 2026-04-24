@@ -10,7 +10,15 @@ Public functions:
 import os
 import re
 import json
+import logging
 import datetime
+
+logging.basicConfig(
+    filename="rag.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -175,7 +183,7 @@ def _parse_schedule_json(raw: str, tasks: list) -> list[dict] | None:
     return validated if validated else None
 
 
-def generate_schedule_with_llm(tasks: list, pet, owner) -> "Schedule":
+def generate_schedule_with_llm(tasks: list, pet, owner):
     """
     Use Claude + RAG context to produce a realistic daily schedule with rationale.
 
@@ -195,6 +203,8 @@ def generate_schedule_with_llm(tasks: list, pet, owner) -> "Schedule":
     query = " ".join(t.title for t in tasks) + f" {pet.species} daily care schedule"
     chunks = retrieve(query, species=pet.species, k=6)
     context = _build_context(chunks)
+    top_dist = round(chunks[0]["distance"], 3) if chunks else None
+    logger.info("retrieve: %d chunks for pet=%s, top_distance=%s", len(chunks), pet.species, top_dist)
 
     # Collect unique sources for citation
     sources = list(dict.fromkeys(_short_source(c["source"]) for c in chunks if c["source"]))
@@ -249,7 +259,11 @@ def generate_schedule_with_llm(tasks: list, pet, owner) -> "Schedule":
         validated = _parse_schedule_json(raw, tasks)
 
         if validated is None:
+            logger.error("schedule_llm: JSON parse failed for pet=%s tasks=%s | raw=%s",
+                         pet.species, [t.title for t in tasks], raw[:200])
             raise ValueError("JSON parse returned no valid blocks")
+
+        logger.info("schedule_llm: success, %d blocks for pet=%s", len(validated), pet.species)
 
         # Build Schedule from validated blocks, sorted by time
         validated.sort(key=lambda b: b["time"])

@@ -16,9 +16,7 @@ This matters because generic pet care apps tell you *what* to do. PawPal+ tells 
 
 ## Demo Walkthrough
 
-> **Add your Loom link here before submitting:** `https://www.loom.com/share/...`
->
-> The walkthrough should show: (1) loading default dog tasks and generating a schedule, (2) the schedule table with grounded reasons and citations, (3) at least one sidebar chat question and answer.
+https://www.loom.com/share/fccf941f6a4b4cd0a5fbbb579766a0ae
 
 ---
 
